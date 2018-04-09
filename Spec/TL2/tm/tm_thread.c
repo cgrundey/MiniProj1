@@ -1,4 +1,5 @@
 #include "tm_thread.hpp"
+#include "ring.c"
 #include <pthread.h>
 #include <signal.h>
 #include <pthread.h>
@@ -12,9 +13,9 @@
 
 __thread Tx_Context* Self;
 
-pad_word_t global_clock = {0};
+pad_word_t ring_index = {0};
 
-lock_entry* lock_table;
+ring_t* theRing;
 
 long int    FALSE = 0,
     TRUE  = 1;

@@ -2,7 +2,7 @@
 
 MyRing::MyRing() {
   this->end = 0;
-  BitFilter<128> filt;
+  BitFilter<1024> filt;
   RingEntry init_entry = {0, filt, 'c'};
   for (int i = 0; i < RING_SIZE; i++) {
     values[i] = init_entry;

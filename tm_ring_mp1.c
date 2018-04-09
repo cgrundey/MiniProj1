@@ -23,6 +23,7 @@
 #include <string.h>
 #include "rand_r_32.h"
 #include "WriteSet.hpp"
+#include "BitFilter.h"
 
 #define TABLE_SIZE 1048576
 
@@ -39,14 +40,6 @@ struct pad_word_t
   volatile uintptr_t val;
   char pad[CACHELINE_BYTES-sizeof(uintptr_t)];
 };
-
-struct lock_entry {
-  volatile uint64_t lock_owner;
-  volatile uint64_t version;
-};
-
-
-extern lock_entry* lock_table;
 
 #define nop()       __asm__ volatile("nop")
 #define pause()		__asm__ ( "pause;" )
@@ -68,19 +61,18 @@ struct Tx_Context {
   int id;
   jmp_buf scope;
   uintptr_t start_time;
-  int reads_pos;
-  uint64_t reads[ACCESS_SIZE];
-  int writes_pos;
-  int granted_writes_pos;
-  uint64_t writes[ACCESS_SIZE];
-  bool granted_writes[ACCESS_SIZE];
+  BitFilter<1024> rf; // BitFilter initializes to 0
+  BitFilter<1024> wf;
   WriteSet* writeset;
   long commits =0, aborts =0;
 };
 
 extern __thread Tx_Context* Self;
 
-extern pad_word_t global_clock;
+extern pad_word_t ring_index;
+
+extern ring_t* theRing;
+
 
 #define TM_TX_VAR	Tx_Context* tx = (Tx_Context*)Self;
 
@@ -94,14 +86,14 @@ extern pad_word_t global_clock;
 #define TM_ALLOC(a) malloc(a)
 
 FORCE_INLINE void tm_abort(Tx_Context* tx, int explicitly);
-
+// Elton
 FORCE_INLINE uint64_t tm_read(uint64_t* addr, Tx_Context* tx)
 {
   // Looking in write set for addr
   WriteSetEntry log((void**)addr);
   bool found = tx->writeset->find(log);
   if (__builtin_expect(found, false))
-  return log.val;
+    return log.val;
 
 
   uint64_t index = (reinterpret_cast<uint64_t>(addr)>>3) % TABLE_SIZE;
@@ -113,36 +105,30 @@ FORCE_INLINE uint64_t tm_read(uint64_t* addr, Tx_Context* tx)
   // tx_validate()
   // return val;
 }
-
+// Colin
 FORCE_INLINE void tm_write(uint64_t* addr, uint64_t val, Tx_Context* tx)
 {
   // RingSTM Stuff
-  tx->wset.add(addr, val);
+  tx->writeset->insert(WriteSetEntry((void**)addr, *((uint64_t*)(&val))));
   tx->wf.add(addr);
-
-  // TL2 Stuff _______________________________________________
-  bool alreadyExists = tx->writeset->insert(WriteSetEntry((void**)addr, *((uint64_t*)(&val))));
-  if (!alreadyExists) {
-    int w_pos = tx->writes_pos++;
-    tx->writes[w_pos] = (reinterpret_cast<uint64_t>(addr)>>3) % TABLE_SIZE;
-    tx->granted_writes[w_pos] = false;
-  }
-  // TL2 Stuff _______________________________________________
 }
-
+// Colin
 FORCE_INLINE void tm_validate(Tx_Context* tx) {
-  my_index=ring_index
+  int my_index = ring_index;
   if (my_index == tx->start_time)
     return;
-  while (ring[my_index].ts < my_index)
+  while (theRing->values[my_index].ts < my_index)
     spin64();
-  for i=my_index downto tx->start_time + 1
-    if intersect(ring[i].wf, TX.rf)
-    abort(tx, 0);
-  while ring[my_index].st!=complete
+  int i;
+  for (i = my_index; i >= tx->start_time + 1; i--) {
+    if (theRing->values[i].wf.intersect(tx->rf))
+      abort(tx, 0);
+  }
+  while (theRing->values[my_index].status != "complete") {
     spin64();
-  fence(Read-Before-Read)
-  TX.start = my_index
+  }
+  fence(Read-Before-Read) // TODO
+  tx->start_time = my_index
 }
 
 #define TM_READ(var)       tm_read(&var, tx)
@@ -151,7 +137,7 @@ FORCE_INLINE void tm_validate(Tx_Context* tx) {
 
 FORCE_INLINE void spin64() {
   for (int i = 0; i < 64; i++)
-  nop();
+    nop();
 }
 
 FORCE_INLINE void thread_init(int id) {
@@ -160,18 +146,18 @@ FORCE_INLINE void thread_init(int id) {
     Tx_Context* tx = (Tx_Context*)Self;
     tx->id = id;
     tx->writeset = new WriteSet(ACCESS_SIZE);
+    // TODO: init other tx stuff
   }
 }
 
 FORCE_INLINE void tm_sys_init() {
-  lock_table = (lock_entry*) malloc(sizeof(lock_entry) * TABLE_SIZE);
-
-  for (int i=0; i < TABLE_SIZE; i++) {
-    lock_table[i].lock_owner = 0;
-    lock_table[i].version = 0;
+  // Initialize Ring
+  int i;
+  for (i = 0; i < 1000; i++) { // TODO: length of ring???
+    RingEntry temp = {0, wf, "complete"};
+    ring_add(theRing, temp);
   }
 }
-
 
 FORCE_INLINE void tm_abort(Tx_Context* tx, int explicitly)
 {
@@ -179,35 +165,38 @@ FORCE_INLINE void tm_abort(Tx_Context* tx, int explicitly)
   //restart the tx
   longjmp(tx->scope, 1);
 }
-
+// Colin
 FORCE_INLINE void tm_commit(Tx_Context* tx)
 {
   if (tx->writeset->size() == 0) { //read-only
     return;
   }
-
-  again: commit_time = ring_index;
-  tx_validate();
-  if (!__sync_bool_compare_and_swap(&ring_index, commit_time, commit_time+1))
-    // goto again
-  ring[commit_time+1] = {writing, tx->wf, commit_time+1};
-  for (i = commit_time downto tx->start_time + 1) {
-    if (intersect(ring[i].wf, tx->wf) {
-      while(ring[i].status == writing)
+  int commit_time;
+  while (1) {
+    commit_time = ring_index;
+    tx_validate();
+    if (__sync_bool_compare_and_swap(&ring_index, commit_time, commit_time+1))
+      break;
+  }
+  theRing->values[commit_time+1] = {"writing", tx->wf, commit_time+1};
+  int i;
+  for (i = commit_time; i >= tx->start_time + 1; i--) {
+    if (intersect(theRing->values[i].wf, tx->wf) {
+      while(theRing->values[i].status == "writing")
         spin64();
     }
   }
   // TODO: Fence (read/write before write)
 
   tx->writeset->writeback();
-  while(ring[commit_time].status == writing)
+  while(theRing->values[commit_time].status == "writing")
     spin64();
   // TODO: Fence (read/write before write)
-  ring[commit_time+1].status = complete;
+  theRing->values[commit_time+1].status = "complete";
 
   tx->commits++;
 }
-
+// Elton
 #define TM_BEGIN												\
 {															\
   Tx_Context* tx = (Tx_Context*)Self;          			\
@@ -218,6 +207,8 @@ FORCE_INLINE void tm_commit(Tx_Context* tx)
     tx->granted_writes_pos =0;							\
     tx->writeset->reset();								\
     tx->start_time = ring_index;
+    // TODO
+    // RV = ring_index
 
 
     #define TM_END                                  	\

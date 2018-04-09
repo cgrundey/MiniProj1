@@ -61,8 +61,8 @@ struct Tx_Context {
   int id;
   jmp_buf scope;
   uintptr_t start_time;
-  BitFilter<128> rf; // range that works: <64> to <1024>
-  BitFilter<128> wf;
+  BitFilter<1024> rf; // range that works: <64> to <1024>
+  BitFilter<1024> wf;
   WriteSet* writeset;
   long commits =0, aborts =0;
 };
@@ -122,18 +122,17 @@ FORCE_INLINE void tm_validate(Tx_Context* tx) {
 
 FORCE_INLINE uint64_t tm_read(uint64_t* addr, Tx_Context* tx)
 {
-WriteSetEntry log((void**)addr);
-bool found = tx->writeset->find(log);
+  WriteSetEntry log((void**)addr);
+  bool found = tx->writeset->find(log);
 
-if( (tx->rf).lookup(addr) && found)
-{
-  return log.val;
-}
-uint64_t val = *addr;
-(tx->rf).add(addr);
-CFENCE;
-tm_validate(tx);
-return val;
+  if( (tx->rf).lookup(addr) && __builtin_expect(found, false)) {
+    return log.val;
+  }
+  uintptr_t val = *addr;
+  (tx->rf).add(addr);
+  CFENCE;
+  tm_validate(tx);
+  return val;
 }
 
 FORCE_INLINE void thread_init(int id) {
@@ -178,19 +177,22 @@ FORCE_INLINE void tm_commit(Tx_Context* tx)
 
   tx->commits++;
 }
+#define TM_BEGIN												\
+{															\
+  Tx_Context* tx = (Tx_Context*)Self;          			\
+  uint32_t abort_flags = _setjmp (tx->scope);				\
+  {														\
+    tx->rf.clear();                     \
+    tx->wf.clear();                     \
+    tx->writeset->reset();								\
+    tx->start_time = ring_index.val;       \
+    while (theRing->ring_get(tx->start_time).ts < tx->start_time || theRing->ring_get(tx->start_time).status != 'c')        \
+      (tx->start_time)--;                \
+    CFENCE;       \
 
-#define TM_BEGIN												
-{															
-  Tx_Context* tx = (Tx_Context*)Self;  			
-  uint32_t abort_flags = _setjmp (tx->scope);				
-  {									
-    uintptr_t index = tx.start_time;
-  while( theRing->ring_get(index).ts < tx.start_time || theRing->ring_get(index).status != 'c' )
-  (tx->start_time)--;
-  CFENCE;      
-    #define TM_END                                  	
-    tm_commit(tx);                          
-  }											
+    #define TM_END                                  	\
+    tm_commit(tx);                          \
+  }											\
 }
 
 #endif //TM_HPP

@@ -3,11 +3,11 @@
 
 #include "BitFilter.h"
 
-#define RING_SIZE 10000
+#define RING_SIZE 1000
 
 typedef struct ringEntry {
   uintptr_t ts;
-  BitFilter<128> wf;
+  BitFilter<1024> wf;
   char status; // 'w' = writing or 'c' = complete
 } RingEntry;
 
