@@ -1,6 +1,5 @@
 /*
 * Mini Project 1
-*   by: Elton Jugi Gladstone Pushparaj, Colin Grundey
 */
 #ifndef TM_HPP
 #define TM_HPP 1
@@ -61,8 +60,8 @@ struct Tx_Context {
   int id;
   jmp_buf scope;
   uintptr_t start_time;
-  BitFilter<128> rf; // range that works: <64> to <1024>
-  BitFilter<128> wf;
+  BitFilter<1024> rf; // range that works: <64> to <1024>
+  BitFilter<1024> wf;
   WriteSet* writeset;
   long commits =0, aborts =0;
 };

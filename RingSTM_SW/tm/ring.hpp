@@ -7,7 +7,7 @@
 
 typedef struct ringEntry {
   uintptr_t ts;
-  BitFilter<128> wf;
+  BitFilter<1024> wf;
   char status; // 'w' = writing or 'c' = complete
 } RingEntry;
 
