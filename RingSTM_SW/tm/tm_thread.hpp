@@ -122,7 +122,18 @@ FORCE_INLINE void tm_validate(Tx_Context* tx) {
 
 FORCE_INLINE uint64_t tm_read(uint64_t* addr, Tx_Context* tx)
 {
+WriteSetEntry log((void**)addr);
+bool found = tx->writeset->find(log);
 
+if( (tx->rf).lookup(addr) && found)
+{
+  return log.val;
+}
+uint64_t val = *addr;
+(tx->rf).add(addr);
+CFENCE;
+tm_validate(tx);
+return val;
 }
 
 FORCE_INLINE void thread_init(int id) {
@@ -168,15 +179,18 @@ FORCE_INLINE void tm_commit(Tx_Context* tx)
   tx->commits++;
 }
 
-#define TM_BEGIN												\
-{															\
-  Tx_Context* tx = (Tx_Context*)Self;          			\
-  uint32_t abort_flags = _setjmp (tx->scope);				\
-  {														\
-
-    #define TM_END                                  	\
-    tm_commit(tx);                          \
-  }											\
+#define TM_BEGIN												
+{															
+  Tx_Context* tx = (Tx_Context*)Self;  			
+  uint32_t abort_flags = _setjmp (tx->scope);				
+  {									
+    uintptr_t index = tx.start_time;
+  while( theRing->ring_get(index).ts < tx.start_time || theRing->ring_get(index).status != 'c' )
+  (tx->start_time)--;
+  CFENCE;      
+    #define TM_END                                  	
+    tm_commit(tx);                          
+  }											
 }
 
 #endif //TM_HPP
