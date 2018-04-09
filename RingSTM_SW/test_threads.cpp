@@ -1,9 +1,8 @@
+
 #include "tm/tm_thread.hpp"
 #include <pthread.h>
 #include <signal.h>
-// #include <pthread.h>
 
-// #include <stdio.mh>
 #include <ctype.h>
 #include <stdlib.h>
 #include <sys/types.h>
